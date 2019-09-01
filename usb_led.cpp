@@ -34,8 +34,9 @@ constexpr byte_per_s_t operator""_Mbps(long double value) {
 //
 constexpr int                       led_pin           = 1;
 constexpr byte_per_s_t              max_transfer_rate = 10.0_Mbps; // maximum transfer rate for the bus
-constexpr std::chrono::milliseconds pwm_periode       = 2000ms;
- 
+constexpr std::chrono::milliseconds pwm_periode       = 100ms;     // 10Hz
+constexpr bool                      logging           = true;
+
 constexpr byte_per_s_t periode_max_transfer_rate = 
     max_transfer_rate * 
     std::chrono::duration_cast<seconds_t>(pwm_periode).count();
@@ -74,7 +75,8 @@ struct [[gnu::packed]] usbmon_packet {
 
 // calculate the high and low duration of the led based on the settings
 static std::pair<seconds_t, seconds_t> calculate_durations(uint64_t bytes) {
-    double ratio = std::min<uint64_t>((bytes * 100) / periode_max_transfer_rate, 100) / 100.0;
+    constexpr double max_ratio = 0.9; // cap the ratio at 90% maximum duty cycle so the led alwys blinks
+    double ratio = std::min( static_cast<double>(bytes) / periode_max_transfer_rate, max_ratio);
     return {pwm_periode * ratio, pwm_periode * (1.0 - ratio)};
 }
 
@@ -83,7 +85,7 @@ static uint64_t get_transfered_bytes(int usbmon_fd) {
     usbmon_packet p;
     ssize_t n = read(usbmon_fd, &p, sizeof(usbmon_packet));
     if (n != 48) return 0; // lagacy read only returns 48 bytes and not sizeof(usbmon_packet)
-    if (p.type != 'C') return 0; // only accumulate the CALLBACK type
+    if (p.type != 'S' && p.type != 'C') return 0; // only accumulate the CALLBACK type
     return p.length;
 }
 
@@ -118,6 +120,8 @@ static void generate_led_pwm() {
         std::cerr << "Cannot open usbmon file, forgot sudo?\n";
         return;
     }
+    // change the file descripter to non blocking
+    fcntl(usbmon_fd, F_SETFL, fcntl(usbmon_fd, F_GETFL) | O_NONBLOCK);
 
     for (uint64_t byte_acc = 0;;) {
         auto [duration_high, duration_low] = calculate_durations(byte_acc);
@@ -126,6 +130,10 @@ static void generate_led_pwm() {
         byte_acc += accumulate_bytes_for(usbmon_fd, duration_high);
         set_led_state(LedState::Off);
         byte_acc += accumulate_bytes_for(usbmon_fd, duration_low);
+
+        if constexpr (logging) {
+            printf("Rate: %9.3f kb/P\tHigh: %6.3f s\tLow: %6.3f s\n", byte_acc / 1024.0, duration_high.count(), duration_low.count());
+        }
     }
 }
 
