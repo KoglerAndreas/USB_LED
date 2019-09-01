@@ -82,15 +82,14 @@ static std::pair<seconds_t, seconds_t> calculate_durations(uint64_t bytes) {
 static uint64_t get_transfered_bytes(int usbmon_fd) {
     usbmon_packet p;
     ssize_t n = read(usbmon_fd, &p, sizeof(usbmon_packet));
-    if (n != 48) return 0;
-    if (p.type != 'C') return 0;
+    if (n != 48) return 0; // lagacy read only returns 48 bytes and not sizeof(usbmon_packet)
+    if (p.type != 'C') return 0; // only accumulate the CALLBACK type
     return p.length;
 }
 
 
 enum class LedState { On, Off};
 static void set_led_state(LedState state) {
-    // TODO diese library hier einbinden
 #ifdef RAPI
     if (state == LedState::On) {
         digitalWrite(led_pin, HIGH);
