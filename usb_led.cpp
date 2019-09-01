@@ -74,7 +74,7 @@ struct [[gnu::packed]] usbmon_packet {
 
 // calculate the high and low duration of the led based on the settings
 static std::pair<seconds_t, seconds_t> calculate_durations(uint64_t bytes) {
-    double ratio = std::min((bytes * 100) / periode_max_transfer_rate, 100lu) / 100.0;
+    double ratio = std::min<uint64_t>((bytes * 100) / periode_max_transfer_rate, 100) / 100.0;
     return {pwm_periode * ratio, pwm_periode * (1.0 - ratio)};
 }
 
