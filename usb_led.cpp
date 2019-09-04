@@ -123,7 +123,7 @@ private:
         if (read(fd, &buffer, 64) != 48) return 0; 
         // only accumulate the CALLBACK type
         if (buffer[type_offset] != 'S' && buffer[type_offset] != 'C') return 0; 
-        return *reinterpret_cast<unsigned int*>(buffer[length_offset]);
+        return *reinterpret_cast<unsigned int*>(&buffer[length_offset]);
     }
 };
 
@@ -182,8 +182,8 @@ void print_help() {
     exit(-1);
 }
 
-template<typename T = uint64_t>
-T parse_value(string_view const &v, map<string_view, uint64_t> const &extentions) {
+template<typename T, typename V = uint64_t>
+T parse_value(string_view const &v, map<string_view, V> const &extentions) {
     int value = 0;
     auto [p, ec] = from_chars(v.data(), v.data() + v.size(), value);
     if (ec != errc{}) {
@@ -193,51 +193,31 @@ T parse_value(string_view const &v, map<string_view, uint64_t> const &extentions
         return T(value);
     }
     string_view extention{ p };
-    auto function = extentions.find(extention);
-    if (function == extentions.end()) {
+    auto multiplier = extentions.find(extention);
+    if (multiplier == extentions.end()) {
         unknown_argument_kill(extention);
     }
-    return T(value * function->second);
+    return T(value * multiplier->second);
 }
 
-auto const size_extentions = map<string_view, uint64_t>{
-    {"Mbps"sv, 1024 * 1024 },
-    {"kbps"sv, 1024        }
-};
-auto const time_extentions = map<string_view, uint64_t>{
-    {"s"sv,  1000 },
-    {"ms"sv, 1 }
-};
-auto const percent_extentions = map<string_view, uint64_t>{
-    { "%"sv, 1 }
-};
+auto const size_extentions    = map<string_view, uint64_t> {{ "Mbps"sv, 1024*1024 }, { "kbps"sv, 1024 }};
+auto const time_extentions    = map<string_view, uint64_t> {{ "s"sv, 1000 }, { "ms"sv, 1 }};
+auto const percent_extentions = map<string_view, double> {{ "%"sv, 1.0/100.0 }};
+
 auto const zero_argument_commands = map<string_view, void(*)(Config &)> {
-    { "-logging"sv, [](auto &cfg) { 
-        cfg.logging = true;
-    }},
-    { "-help"sv, [](auto &cfg) { 
-        print_help();
-    }},
+    { "-logging"sv, [](auto &cfg) { cfg.logging = true; }},
+    { "-help"sv,    [](auto &cfg) { print_help();       }},
 };
+
 auto const one_argument_commands = map<string_view, void(*)(Config &, string_view)> {
-    { "-period"sv, [](auto &cfg, auto value) { 
-        cfg.pwm_periode = parse_value<duration_t>(value, time_extentions); 
-    }},
-    { "-max"sv, [](auto &cfg, auto value) { 
-        cfg.max_transfer_rate = parse_value(value, size_extentions);
-    }},
-    { "-min"sv, [](auto &cfg, auto value) { 
-        cfg.min_transfer_rate = parse_value(value, size_extentions);
-    }},
-    { "-gpio"sv, [](auto &cfg, auto value) { 
-        cfg.led_gpio_pin = parse_value<int>(value, {});
-    }},
-    { "-off"sv, [](auto &cfg, auto value) { 
-        auto percent = parse_value(value, percent_extentions);
-        if (percent < 0 || percent > 100) {
+    { "-period"sv, [](auto &cfg, auto value) { cfg.pwm_periode       = parse_value<duration_t>(value, time_extentions); }},
+    { "-max"sv,    [](auto &cfg, auto value) { cfg.max_transfer_rate = parse_value<uint64_t>  (value, size_extentions); }},
+    { "-min"sv,    [](auto &cfg, auto value) { cfg.min_transfer_rate = parse_value<uint64_t>  (value, size_extentions); }},
+    { "-gpio"sv,   [](auto &cfg, auto value) { cfg.led_gpio_pin      = parse_value<int>       (value, {});              }},
+    { "-off"sv,    [](auto &cfg, auto value) { 
+        cfg.off_periode_ratio = parse_value<double>(value, percent_extentions);
+        if (cfg.off_periode_ratio < 0 || cfg.off_periode_ratio > 1)
             unknown_argument_kill(value);
-        }
-        cfg.off_periode_ratio = percent / 100.0;
     }},
 };
 
