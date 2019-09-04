@@ -24,15 +24,18 @@ using timepoint_t = chrono::high_resolution_clock::time_point;
 using seconds_t   = chrono::duration<double, ratio<1, 1>>;
 using arguments_t = vector<string_view>;
 
-auto now() noexcept {
+// get the current timepoint
+timepoint_t now() noexcept {
     return chrono::high_resolution_clock::now();
 }
 
+// cvt any duration to seconds
 template<typename T>
 double to_sec(T const &d) noexcept {
     return chrono::duration_cast<seconds_t>(d).count();
 }
 
+// multiply a non double duration by a double
 template<typename T>
 T multiply_duration(T const &d, double ratio) noexcept {
     return T(static_cast<typename T::rep>(d.count() * ratio));
@@ -47,17 +50,26 @@ struct Config {
     double     off_periode_ratio = 0.1;
     int        led_gpio_pin      = 17;
 
-    friend ostream& operator<<(ostream &s, Config const &cfg) {
-        s << "\nConfiguration:\n";
-        s << "-logging: "           << boolalpha << cfg.logging       << '\n';
-        s << "-period: "            << to_sec(cfg.pwm_periode)        << " s\n";
-        s << "-off_period_ratio: "  << cfg.off_periode_ratio * 100.0  << "%\n";
-        s << "-max_transfer_rate: " << cfg.max_transfer_rate / 1024.0 << " kbps\n";
-        s << "-min_transfer_rate: " << cfg.min_transfer_rate / 1024.0 << " kbps\n";
-        s << "-gpio: "              << cfg.led_gpio_pin               << '\n';
-        return s;
+    // dump the current config
+    void print() const noexcept {
+        printf(
+            "\nConfiguration:\n\t"
+            "logging: %d \n\t"
+            "periode: %.3f s\n\t"
+            "off_period_ratio: %.0f %%\n\t"
+            "max_transfer_rate: %.3f kbps\n\t"
+            "min_transfer_rate: %.3f kbps\n\t"
+            "gpio: %d\n\n",
+            logging,
+            to_sec(pwm_periode),
+            off_periode_ratio * 100,
+            max_transfer_rate / 1024.0,
+            min_transfer_rate / 1024.0,
+            led_gpio_pin
+        );
     }
 
+    // convert the transfer rates to the given periode
     void calculate_periode_values() noexcept {
         max_transfer_rate *= to_sec(pwm_periode);
         min_transfer_rate *= to_sec(pwm_periode);
@@ -76,10 +88,11 @@ struct Config {
 };
 
 class UsbMon {
-    int      fd                = open("/dev/usbmon0", O_RDONLY | O_NONBLOCK);
+    int      fd                = -1;
     uint64_t accumulated_bytes = 0;
 public:
     UsbMon() {
+        fd = open("/dev/usbmon0", O_RDONLY | O_NONBLOCK);
         if (fd == -1) {
             cerr << "Cannot open usbmon device! forgot sudo?\n";
             exit(-1);
@@ -96,6 +109,7 @@ public:
         }
         return chrono::duration_cast<duration_t>(now() - tsc);
     }
+    // exchange the accumulated value with zero
     uint64_t get_and_reset_accumulated_bytes() noexcept {
         return exchange(accumulated_bytes, 0);
     }
@@ -115,12 +129,12 @@ private:
 
 struct Raspi {
     enum class LedState { On, Off};
-    static void set_led_state(Config const &cfg, Raspi::LedState state) {
+    static void set_led_state(int pin, Raspi::LedState state) {
     #ifdef USING_WIRING_PI
         if (state == LedState::On) {
-            digitalWrite(cfg.led_gpio_pin, HIGH);
+            digitalWrite(pin, HIGH);
         } else {
-            digitalWrite(cfg.led_gpio_pin, LOW);
+            digitalWrite(pin, LOW);
         }
     #endif
     }
@@ -133,9 +147,9 @@ static void generate_led_pwm(Config const &cfg, UsbMon &monitor) {
 
         auto [duration_high, duration_low] = cfg.calculate_durations(accumulated_bytes);
 
-        Raspi::set_led_state(cfg, Raspi::LedState::On);
+        Raspi::set_led_state(cfg.led_gpio_pin, Raspi::LedState::On);
         auto duration_high_real = monitor.accumulate_bytes_for(duration_high);
-        Raspi::set_led_state(cfg, Raspi::LedState::Off);
+        Raspi::set_led_state(cfg.led_gpio_pin, Raspi::LedState::Off);
         auto duration_low_real = monitor.accumulate_bytes_for(duration_low);
  
         if (cfg.logging) {
@@ -246,7 +260,7 @@ Config parse_arguments(arguments_t const &arguments) {
 
 int main(int argc, char *argv[]) {
     Config cfg = parse_arguments(arguments_t(argv + 1, argv + argc));
-    cout << cfg << endl;
+    cfg.print();
     cfg.calculate_periode_values();
 
     UsbMon monitor{};
