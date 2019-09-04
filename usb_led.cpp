@@ -127,40 +127,52 @@ private:
     }
 };
 
-struct Raspi {
+class Raspi {
+    int pin = 0;
+public:
+    Raspi(int p) : pin{ p } {
+        #ifdef USING_WIRING_PI
+            wiringPiSetupGpio();
+            pinMode(pin, OUTPUT);
+        #endif
+    }
     enum class LedState { On, Off};
-    static void set_led_state(int pin, Raspi::LedState state) {
-    #ifdef USING_WIRING_PI
-        if (state == LedState::On) {
-            digitalWrite(pin, HIGH);
-        } else {
-            digitalWrite(pin, LOW);
-        }
-    #endif
+    void set_led_state(Raspi::LedState state) const noexcept {
+        #ifdef USING_WIRING_PI
+            if (state == LedState::On) {
+                digitalWrite(pin, HIGH);
+            } else {
+                digitalWrite(pin, LOW);
+            }
+        #endif
     }
 };
 
 // automatically generate pwm time based on the sample interval and the maximum transfer rate 
-static void generate_led_pwm(Config const &cfg, UsbMon &monitor) {
-    for (auto tsc = now(), last_tsc = tsc; ;last_tsc = tsc, tsc = now()) {
-        auto accumulated_bytes = monitor.get_and_reset_accumulated_bytes();
+static void generate_led_pwm(Config const &cfg, Raspi const &raspi, UsbMon &monitor) {
+    timepoint_t tsc = now(), last_tsc = tsc;
 
-        auto [duration_high, duration_low] = cfg.calculate_durations(accumulated_bytes);
+    for(;;) {
+        auto bytes_acc = monitor.get_and_reset_accumulated_bytes();
 
-        Raspi::set_led_state(cfg.led_gpio_pin, Raspi::LedState::On);
-        auto duration_high_real = monitor.accumulate_bytes_for(duration_high);
-        Raspi::set_led_state(cfg.led_gpio_pin, Raspi::LedState::Off);
-        auto duration_low_real = monitor.accumulate_bytes_for(duration_low);
+        auto [high, low] = cfg.calculate_durations(bytes_acc);
+
+        raspi.set_led_state(Raspi::LedState::On);
+        duration_t high_measured = monitor.accumulate_bytes_for(high);
+
+        raspi.set_led_state(Raspi::LedState::Off);
+        duration_t low_measured = monitor.accumulate_bytes_for(low);
  
         if (cfg.logging) {
             printf(
                 "Rate: %9.3f kb/s   PWM: %6.3f s   [H: %6.3f s   L:%6.3f s]\n", 
-                accumulated_bytes / to_sec(cfg.pwm_periode) / 1024.0, 
+                bytes_acc / to_sec(cfg.pwm_periode) / 1024.0, 
                 to_sec(tsc - last_tsc), 
-                to_sec(duration_high_real),
-                to_sec(duration_low_real)
+                to_sec(high_measured),
+                to_sec(low_measured)
             );
         }
+        last_tsc = std::exchange(tsc, now());
     }
 }
 
@@ -202,7 +214,7 @@ T parse_value(string_view const &v, map<string_view, V> const &extentions) {
 
 auto const size_extentions    = map<string_view, uint64_t> {{ "Mbps"sv, 1024*1024 }, { "kbps"sv, 1024 }};
 auto const time_extentions    = map<string_view, uint64_t> {{ "s"sv, 1000 }, { "ms"sv, 1 }};
-auto const percent_extentions = map<string_view, double> {{ "%"sv, 1.0/100.0 }};
+auto const percent_extentions = map<string_view, double>   {{ "%"sv, 1.0/100.0 }};
 
 auto const zero_argument_commands = map<string_view, void(*)(Config &)> {
     { "-logging"sv, [](auto &cfg) { cfg.logging = true; }},
@@ -210,15 +222,11 @@ auto const zero_argument_commands = map<string_view, void(*)(Config &)> {
 };
 
 auto const one_argument_commands = map<string_view, void(*)(Config &, string_view)> {
-    { "-period"sv, [](auto &cfg, auto value) { cfg.pwm_periode       = parse_value<duration_t>(value, time_extentions); }},
-    { "-max"sv,    [](auto &cfg, auto value) { cfg.max_transfer_rate = parse_value<uint64_t>  (value, size_extentions); }},
-    { "-min"sv,    [](auto &cfg, auto value) { cfg.min_transfer_rate = parse_value<uint64_t>  (value, size_extentions); }},
-    { "-gpio"sv,   [](auto &cfg, auto value) { cfg.led_gpio_pin      = parse_value<int>       (value, {});              }},
-    { "-off"sv,    [](auto &cfg, auto value) { 
-        cfg.off_periode_ratio = parse_value<double>(value, percent_extentions);
-        if (cfg.off_periode_ratio < 0 || cfg.off_periode_ratio > 1)
-            unknown_argument_kill(value);
-    }},
+    { "-period"sv, [](auto &cfg, auto value) { cfg.pwm_periode       = parse_value<duration_t>(value, time_extentions);    }},
+    { "-max"sv,    [](auto &cfg, auto value) { cfg.max_transfer_rate = parse_value<uint64_t>  (value, size_extentions);    }},
+    { "-min"sv,    [](auto &cfg, auto value) { cfg.min_transfer_rate = parse_value<uint64_t>  (value, size_extentions);    }},
+    { "-gpio"sv,   [](auto &cfg, auto value) { cfg.led_gpio_pin      = parse_value<int>       (value, {});                 }},
+    { "-off"sv,    [](auto &cfg, auto value) { cfg.off_periode_ratio = parse_value<double>    (value, percent_extentions); }},
 };
 
 Config parse_arguments(arguments_t const &arguments) {
@@ -243,12 +251,9 @@ int main(int argc, char *argv[]) {
     cfg.print();
     cfg.calculate_periode_values();
 
+    Raspi raspi{ cfg.led_gpio_pin };
     UsbMon monitor{};
-    
-#ifdef USING_WIRING_PI
-    wiringPiSetupGpio();
-    pinMode(cfg.led_gpio_pin, OUTPUT);
-#endif
-    generate_led_pwm(cfg, monitor);
+
+    generate_led_pwm(cfg, raspi, monitor);
     return 0;
 }
