@@ -15,57 +15,28 @@
 #include <wiringPi.h>
 #endif
 
+using namespace std;
 using namespace std::string_view_literals;
 using namespace std::chrono_literals;
 
-using duration_t  = std::chrono::milliseconds;
-using timepoint_t = std::chrono::high_resolution_clock::time_point;
-using seconds_t   = std::chrono::duration<double, std::ratio<1, 1>>;
-using arguments_t = std::vector<std::string_view>;
+using duration_t  = chrono::milliseconds;
+using timepoint_t = chrono::high_resolution_clock::time_point;
+using seconds_t   = chrono::duration<double, ratio<1, 1>>;
+using arguments_t = vector<string_view>;
 
 auto now() noexcept {
-    return std::chrono::high_resolution_clock::now();
+    return chrono::high_resolution_clock::now();
 }
 
 template<typename T>
 double to_sec(T const &d) noexcept {
-    return std::chrono::duration_cast<seconds_t>(d).count();
+    return chrono::duration_cast<seconds_t>(d).count();
 }
 
 template<typename T>
 T multiply_duration(T const &d, double ratio) noexcept {
     return T(static_cast<typename T::rep>(d.count() * ratio));
 } 
-
-// structure from the USBMon Device
-//DIRECT copy from https://www.kernel.org/doc/Documentation/usb/usbmon.txt
-struct [[gnu::packed]] usbmon_packet {
-    uint64_t      id;               /*  0: URB ID - from submission to callback */
-    unsigned char type;             /*  8: Same as text; extensible. */
-    unsigned char xfer_type;        /*    ISO (0), Intr, Control, Bulk (3) */
-    unsigned char epnum;            /*     Endpoint number and transfer direction */
-    unsigned char devnum;           /*     Device address */
-    uint16_t      busnum;           /* 12: Bus number */
-    char          flag_setup;       /* 14: Same as text */
-    char          flag_data;        /* 15: Same as text; Binary zero is OK. */
-    int64_t       ts_sec;           /* 16: gettimeofday */
-    int32_t       ts_usec;          /* 24: gettimeofday */
-    int           status;           /* 28: */
-    unsigned int  length;           /* 32: Length of data (submitted or actual) */
-    unsigned int  len_cap;          /* 36: Delivered length */
-    union {                         /* 40: */
-        unsigned char setup[2];     /* Only for Control S-type */
-        struct iso_rec {            /* Only for ISO */
-            int error_count;
-            int numdesc;
-        } iso;
-    } s;
-    int          interval;          /* 48: Only for Interrupt and ISO */
-    int          start_frame;       /* 52: For ISO */
-    unsigned int xfer_flags;        /* 56: copy of URB's transfer_flags */
-    unsigned int ndesc;             /* 60: Actual number of ISO descriptors */
-};                                  /* 64 total length */
-
 
 // Configuration change defaults here
 struct Config {
@@ -74,16 +45,16 @@ struct Config {
     uint64_t   min_transfer_rate = 0;
     duration_t pwm_periode       = 100ms;
     double     off_periode_ratio = 0.1;
-    int        led_gpio_pin      = 0;
+    int        led_gpio_pin      = 17;
 
-    friend std::ostream& operator<<(std::ostream &s, Config const &cfg) {
+    friend ostream& operator<<(ostream &s, Config const &cfg) {
         s << "\nConfiguration:\n";
-        s << "-logging: " << std::boolalpha << cfg.logging << '\n';
-        s << "-period: " << to_sec(cfg.pwm_periode) << " s\n";
-        s << "-off_period_ratio: " << cfg.off_periode_ratio * 100.0 << "%\n";
+        s << "-logging: "           << boolalpha << cfg.logging       << '\n';
+        s << "-period: "            << to_sec(cfg.pwm_periode)        << " s\n";
+        s << "-off_period_ratio: "  << cfg.off_periode_ratio * 100.0  << "%\n";
         s << "-max_transfer_rate: " << cfg.max_transfer_rate / 1024.0 << " kbps\n";
         s << "-min_transfer_rate: " << cfg.min_transfer_rate / 1024.0 << " kbps\n";
-        s << "-gpio: " << cfg.led_gpio_pin << '\n';
+        s << "-gpio: "              << cfg.led_gpio_pin               << '\n';
         return s;
     }
 
@@ -93,8 +64,8 @@ struct Config {
     }
 
     // calculate the high and low duration of the led based on the settings
-    std::pair<duration_t, duration_t> calculate_durations(uint64_t bytes) const noexcept {
-        auto clamped   = std::clamp(bytes, min_transfer_rate, max_transfer_rate);
+    pair<duration_t, duration_t> calculate_durations(uint64_t bytes) const noexcept {
+        auto clamped   = clamp(bytes, min_transfer_rate, max_transfer_rate);
         auto ratio     = static_cast<double>(clamped - min_transfer_rate) / (max_transfer_rate - min_transfer_rate);
         auto on_ration = ratio * (1.0 - off_periode_ratio);
         return { 
@@ -105,17 +76,13 @@ struct Config {
 };
 
 class UsbMon {
-    int fd;
-    uint64_t accumulated_bytes;
+    int      fd                = open("/dev/usbmon0", O_RDONLY | O_NONBLOCK);
+    uint64_t accumulated_bytes = 0;
 public:
-    UsbMon() 
-    : fd { -1 }
-    , accumulated_bytes{ 0 }
-    {
-        fd = open("/dev/usbmon0", O_RDONLY | O_NONBLOCK);
+    UsbMon() {
         if (fd == -1) {
-            std::cerr << "Cannot open usbmon device! forgot sudo?\n";
-            std::exit(-1);
+            cerr << "Cannot open usbmon device! forgot sudo?\n";
+            exit(-1);
         }
     }
     ~UsbMon() {
@@ -127,19 +94,22 @@ public:
         while ( now() - tsc < dur ) {
             accumulated_bytes += get_transfered_bytes();
         }
-        return std::chrono::duration_cast<duration_t>(now() - tsc);
+        return chrono::duration_cast<duration_t>(now() - tsc);
     }
     uint64_t get_and_reset_accumulated_bytes() noexcept {
-        return std::exchange(accumulated_bytes, 0);
+        return exchange(accumulated_bytes, 0);
     }
 private:
     // get the transfered byte from the last packet
     uint64_t get_transfered_bytes() const noexcept {
-        usbmon_packet p;
-        ssize_t n = read(fd, &p, sizeof(usbmon_packet));
-        if (n != 48) return 0; // lagacy read only returns 48 bytes and not sizeof(usbmon_packet)
-        if (p.type != 'S' && p.type != 'C') return 0; // only accumulate the CALLBACK type
-        return p.length;
+        constexpr auto type_offset   = 8;
+        constexpr auto length_offset = 32;
+        unsigned char buffer[64];
+        // lagacy read only returns 48 bytes
+        if (read(fd, &buffer, 64) != 48) return 0; 
+        // only accumulate the CALLBACK type
+        if (buffer[type_offset] != 'S' && buffer[type_offset] != 'C') return 0; 
+        return *reinterpret_cast<unsigned int*>(buffer[length_offset]);
     }
 };
 
@@ -155,9 +125,6 @@ struct Raspi {
     #endif
     }
 };
-
-
-
 
 // automatically generate pwm time based on the sample interval and the maximum transfer rate 
 static void generate_led_pwm(Config const &cfg, UsbMon &monitor) {
@@ -184,97 +151,102 @@ static void generate_led_pwm(Config const &cfg, UsbMon &monitor) {
 }
 
 void print_help() {
-    std::cout <<
+    puts(
         "-help                 ... print this message\n" \
         "-logging              ... enable logging\n" \
         "-period value[s,ms]   ... pwm period\n" \
         "-off value[%]         ... enforced off period of the led in percent\n" \
         "-max value[Mbps,kbps] ... maximum usb transfer rate\n" \
         "-min value[Mbps,kbps] ... minimum usb transfer rate\n" \
-        "-gpio value           ... GPIO pin to use\n";
+        "-gpio value           ... GPIO pin to use\n"
+    );
 }
 
-[[noreturn]] void unknown_argument_kill(std::string_view const &v) {
-    std::cout << "Unknown or invalid argument: " << v << std::endl;
+[[noreturn]] void unknown_argument_kill(string_view const &v) {
+    cout << "Unknown or invalid argument: " << v << endl;
     print_help();
-    std::exit(-1);
+    exit(-1);
 }
 
-int64_t parse_int_argument_with_extent(std::string_view const &v, std::map<std::string_view, int64_t(*)(int64_t)> const &extentions) {
+template<typename T = uint64_t>
+T parse_value(string_view const &v, map<string_view, uint64_t> const &extentions) {
     int value = 0;
-    auto [p, ec] = std::from_chars(v.data(), v.data() + v.size(), value);
-    if (ec != std::errc{}) {
+    auto [p, ec] = from_chars(v.data(), v.data() + v.size(), value);
+    if (ec != errc{}) {
         unknown_argument_kill(v);
     }
     if (extentions.empty()) {
-        return value;
+        return T(value);
     }
-    std::string_view extention{ p };
+    string_view extention{ p };
     auto function = extentions.find(extention);
     if (function == extentions.end()) {
         unknown_argument_kill(extention);
     }
-    return function->second(value);
+    return T(value * function->second);
 }
 
-arguments_t::const_iterator parse_argument(arguments_t::const_iterator begin, arguments_t::const_iterator end, Config &cfg) {
-    auto N = std::distance(begin, end);
-    if (N == 0) return end;
-
-    auto const size_extentions = std::map<std::string_view, int64_t(*)(int64_t)>{
-        {"Mbps"sv, [](int64_t v) { return v * 1024 * 1024; } },
-        {"kbps"sv, [](int64_t v) { return v * 1024;        } }
-    };
-
-    if (*begin == "-logging"sv) {
+auto const size_extentions = map<string_view, uint64_t>{
+    {"Mbps"sv, 1024 * 1024 },
+    {"kbps"sv, 1024        }
+};
+auto const time_extentions = map<string_view, uint64_t>{
+    {"s"sv,  1000 },
+    {"ms"sv, 1 }
+};
+auto const percent_extentions = map<string_view, uint64_t>{
+    { "%"sv, 1 }
+};
+auto const zero_argument_commands = map<string_view, void(*)(Config &)> {
+    { "-logging"sv, [](auto &cfg) { 
         cfg.logging = true;
-        return begin + 1;
-    }
-    if (*begin == "-period"sv && N >= 2) {
-        cfg.pwm_periode = std::chrono::milliseconds(parse_int_argument_with_extent(*(begin+1), {
-            { "s"sv, [](int64_t v) { return v * 1000; } },
-            {"ms"sv, [](int64_t v) { return v * 1;    } }
-        }));
-        return begin + 2;
-    }
-    if (*begin == "-max"sv && N >= 2) {
-        cfg.max_transfer_rate = static_cast<uint64_t>(parse_int_argument_with_extent(*(begin+1), size_extentions));
-        return begin + 2;
-    }
-    if (*begin == "-min"sv && N >= 2) {
-        cfg.min_transfer_rate = static_cast<uint64_t>(parse_int_argument_with_extent(*(begin+1), size_extentions));
-        return begin + 2;
-    }
-    if (*begin == "-gpio"sv && N >= 2) {
-        cfg.led_gpio_pin = static_cast<int>(parse_int_argument_with_extent(*(begin+1), {}));
-        return begin + 2;
-    }
-    if (*begin == "-off"sv && N >= 2) {
-        int64_t percent = parse_int_argument_with_extent(*(begin+1), {
-            { "%"sv, [](int64_t v) { return v; } }
-        });
+    }},
+    { "-help"sv, [](auto &cfg) { 
+        print_help();
+    }},
+};
+auto const one_argument_commands = map<string_view, void(*)(Config &, string_view)> {
+    { "-period"sv, [](auto &cfg, auto value) { 
+        cfg.pwm_periode = parse_value<duration_t>(value, time_extentions); 
+    }},
+    { "-max"sv, [](auto &cfg, auto value) { 
+        cfg.max_transfer_rate = parse_value(value, size_extentions);
+    }},
+    { "-min"sv, [](auto &cfg, auto value) { 
+        cfg.min_transfer_rate = parse_value(value, size_extentions);
+    }},
+    { "-gpio"sv, [](auto &cfg, auto value) { 
+        cfg.led_gpio_pin = parse_value<int>(value, {});
+    }},
+    { "-off"sv, [](auto &cfg, auto value) { 
+        auto percent = parse_value(value, percent_extentions);
         if (percent < 0 || percent > 100) {
-            unknown_argument_kill(*(begin+1));
+            unknown_argument_kill(value);
         }
         cfg.off_periode_ratio = percent / 100.0;
-        return begin + 2;
-    }
-    if (*begin == "-help"sv) {
-        print_help();
-        return begin + 1;
-    }
+    }},
+};
 
-    unknown_argument_kill(*begin);
+Config parse_arguments(arguments_t const &arguments) {
+    Config cfg{};
+    auto cur = arguments.cbegin();
+    auto const end = arguments.cend();
+
+    while (cur != end) {
+        auto const argument = *cur++;
+        if (auto cmd = zero_argument_commands.find(argument); cmd != zero_argument_commands.end())
+            cmd->second(cfg);
+        else if (auto cmd = one_argument_commands.find(argument); cmd != one_argument_commands.end() && cur != end)
+            cmd->second(cfg, *cur++);
+        else
+            unknown_argument_kill(argument);
+    }
+    return cfg;   
 }
 
 int main(int argc, char *argv[]) {
-    arguments_t arguments;
-    std::copy(argv, argv + argc, std::back_inserter(arguments));
-    Config cfg{};
-    for (auto current = arguments.cbegin() + 1; current != arguments.cend(); ) {
-        current = parse_argument(current, arguments.cend(), cfg);
-    }
-    std::cout << cfg << std::endl;
+    Config cfg = parse_arguments(arguments_t(argv + 1, argv + argc));
+    cout << cfg << endl;
     cfg.calculate_periode_values();
 
     UsbMon monitor{};
