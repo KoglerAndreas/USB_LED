@@ -110,7 +110,7 @@ public:
     UsbMon() {
         fd = open("/dev/usbmon0", O_RDONLY);
         if (fd == -1) {
-            cerr << "Cannot open usbmon device! forgot sudo?\n";
+            cerr << "Cannot open usbmon device! forget sudo or modprobe? (\"sudo modprobe usbmon\") \n";
             exit(-1);
         }
         FD_ZERO(&waiting);
