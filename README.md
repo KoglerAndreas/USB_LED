@@ -4,7 +4,7 @@ A small c++17 program to generate a LED PWM based on the current overall USB tra
 ## FEATURES
 
 ### PWM-Periode
-The PWM-Periode can be set in milliseconds and seconds. This given period will then be used to generate the PWM signal to power the specified GPIO pin.
+The PWM-Periode can be set in milliseconds and seconds. This given period will then be used to generate the PWM signal to power the specified pin.
 
 The maximum transfer rate can be set by the "-period value[s|ms]" flag.
 
@@ -23,10 +23,13 @@ The minimum transfer threshold of the USB device. If the USB traffic is less the
 
 The minimum transfer rate can be set by the "-min value[Mpbs|Kpbs]" flag.
 
-### GPIO Pin
-This is the configured GPIO pin to use as driving output. In other words, the pin where the LED is connected.
+### Pin
+This is the configured BCM pin to use as driving output. In other words, the pin where the LED is connected.
 
-The GPIO pin can be set by the "-gpio value" flag.
+The pin can be set by the "-pin value" flag.
+
+### Invert
+The LED high and low periode can be inverted by setting the "-inv" flag.
 
 ### Logging
 Shows current debug information:

@@ -41,14 +41,27 @@ T multiply_duration(T const &d, double ratio) noexcept {
     return T(static_cast<typename T::rep>(d.count() * ratio));
 } 
 
+timeval get_timeval_until(timepoint_t const &tp) {
+    auto remaining = tp - now();
+    auto remaining_s  = chrono::duration_cast<chrono::seconds>(remaining);
+    auto remianing_us = chrono::duration_cast<chrono::microseconds>(remaining) 
+        - chrono::duration_cast<chrono::microseconds>(remaining_s);
+
+    timeval tv;
+    tv.tv_sec  = remaining_s.count();
+    tv.tv_usec = remianing_us.count();
+    return tv;
+}
+
 // Configuration change defaults here
 struct Config {
     bool       logging           = false;
+    bool       invert            = false;
     uint64_t   max_transfer_rate = 10 * 1024 * 1024;
     uint64_t   min_transfer_rate = 0;
     duration_t pwm_periode       = 100ms;
     double     off_periode_ratio = 0.1;
-    int        led_gpio_pin      = 17;
+    int        led_pin      = 17;
 
     // dump the current config
     void print() const noexcept {
@@ -59,13 +72,15 @@ struct Config {
             "off_period_ratio: %.0f %%\n\t"
             "max_transfer_rate: %.3f kbps\n\t"
             "min_transfer_rate: %.3f kbps\n\t"
-            "gpio: %d\n\n",
+            "pin: %d\n\t"
+            "inverted: %d \n\n",
             logging,
             to_sec(pwm_periode),
             off_periode_ratio * 100,
             max_transfer_rate / 1024.0,
             min_transfer_rate / 1024.0,
-            led_gpio_pin
+            led_pin,
+            invert
         );
     }
 
@@ -90,22 +105,25 @@ struct Config {
 class UsbMon {
     int      fd                = -1;
     uint64_t accumulated_bytes = 0;
+    fd_set   waiting;
 public:
     UsbMon() {
-        fd = open("/dev/usbmon0", O_RDONLY | O_NONBLOCK);
+        fd = open("/dev/usbmon0", O_RDONLY);
         if (fd == -1) {
             cerr << "Cannot open usbmon device! forgot sudo?\n";
             exit(-1);
         }
+        FD_ZERO(&waiting);
     }
     ~UsbMon() {
         close(fd);
     }
     // sum all the bytes over a given duration
     duration_t accumulate_bytes_for(duration_t const &dur) noexcept {
-        auto tsc = now();
-        while ( now() - tsc < dur ) {
-            accumulated_bytes += get_transfered_bytes();
+        auto tsc   = now();
+        auto until = tsc + dur; 
+        while ( now() < until ) {
+            accumulated_bytes += get_transfered_bytes(until);
         }
         return chrono::duration_cast<duration_t>(now() - tsc);
     }
@@ -115,22 +133,31 @@ public:
     }
 private:
     // get the transfered byte from the last packet
-    uint64_t get_transfered_bytes() const noexcept {
+    uint64_t get_transfered_bytes(timepoint_t const &until) noexcept {
         constexpr auto type_offset   = 8;
         constexpr auto length_offset = 32;
         unsigned char buffer[64];
+
+        timeval tv = get_timeval_until(until);
+        FD_SET(fd, &waiting);
+        int ret = select(fd+1, &waiting, nullptr, nullptr, &tv);
+        if (ret == -1 || ret == 0) 
+            return 0;
         // lagacy read only returns 48 bytes
-        if (read(fd, &buffer, 64) != 48) return 0; 
+        if (read(fd, &buffer, 64) != 48) 
+            return 0; 
         // only accumulate the CALLBACK type
-        if (buffer[type_offset] != 'S' && buffer[type_offset] != 'C') return 0; 
+        if (buffer[type_offset] != 'S' && buffer[type_offset] != 'C') 
+            return 0; 
         return *reinterpret_cast<unsigned int*>(&buffer[length_offset]);
     }
 };
 
 class Raspi {
     int pin = 0;
+    bool inverted = false;
 public:
-    Raspi(int p) : pin{ p } {
+    Raspi(int p, bool inv) : pin{ p }, inverted{ inv } {
         #ifdef USING_WIRING_PI
             wiringPiSetupGpio();
             pinMode(pin, OUTPUT);
@@ -139,7 +166,7 @@ public:
     enum class LedState { On, Off};
     void set_led_state(Raspi::LedState state) const noexcept {
         #ifdef USING_WIRING_PI
-            if (state == LedState::On) {
+            if ((state == LedState::On) != inv) {
                 digitalWrite(pin, HIGH);
             } else {
                 digitalWrite(pin, LOW);
@@ -184,7 +211,8 @@ void print_help() {
         "-off value[%]         ... enforced off period of the led in percent\n" \
         "-max value[Mbps,kbps] ... maximum usb transfer rate\n" \
         "-min value[Mbps,kbps] ... minimum usb transfer rate\n" \
-        "-gpio value           ... GPIO pin to use\n"
+        "-pin value            ... pin to use\n" \
+        "-inv                  ... invert the HIGH and LOW state\n"
     );
 }
 
@@ -219,13 +247,14 @@ auto const percent_extentions = map<string_view, double>   {{ "%"sv, 1.0/100.0 }
 auto const zero_argument_commands = map<string_view, void(*)(Config &)> {
     { "-logging"sv, [](auto &cfg) { cfg.logging = true; }},
     { "-help"sv,    [](auto &cfg) { print_help();       }},
+    { "-inv"sv,     [](auto &cfg) { cfg.invert = true;  }},
 };
 
 auto const one_argument_commands = map<string_view, void(*)(Config &, string_view)> {
     { "-period"sv, [](auto &cfg, auto value) { cfg.pwm_periode       = parse_value<duration_t>(value, time_extentions);    }},
     { "-max"sv,    [](auto &cfg, auto value) { cfg.max_transfer_rate = parse_value<uint64_t>  (value, size_extentions);    }},
     { "-min"sv,    [](auto &cfg, auto value) { cfg.min_transfer_rate = parse_value<uint64_t>  (value, size_extentions);    }},
-    { "-gpio"sv,   [](auto &cfg, auto value) { cfg.led_gpio_pin      = parse_value<int>       (value, {});                 }},
+    { "-pin"sv,    [](auto &cfg, auto value) { cfg.led_pin           = parse_value<int>       (value, {});                 }},
     { "-off"sv,    [](auto &cfg, auto value) { cfg.off_periode_ratio = parse_value<double>    (value, percent_extentions); }},
 };
 
@@ -251,7 +280,7 @@ int main(int argc, char *argv[]) {
     cfg.print();
     cfg.calculate_periode_values();
 
-    Raspi raspi{ cfg.led_gpio_pin };
+    Raspi raspi{ cfg.led_pin, cfg.invert };
     UsbMon monitor{};
 
     generate_led_pwm(cfg, raspi, monitor);
