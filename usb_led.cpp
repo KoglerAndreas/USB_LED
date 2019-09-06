@@ -166,7 +166,7 @@ public:
     enum class LedState { On, Off};
     void set_led_state(Raspi::LedState state) const noexcept {
         #ifdef USING_WIRING_PI
-            if ((state == LedState::On) != inv) {
+            if ((state == LedState::On) != inverted) {
                 digitalWrite(pin, HIGH);
             } else {
                 digitalWrite(pin, LOW);
