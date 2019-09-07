@@ -10,6 +10,7 @@
 #include <charconv>
 #include <map>
 #include <algorithm>
+#include <iterator>
 
 #ifdef USING_WIRING_PI
 #include <wiringPi.h>
@@ -61,7 +62,7 @@ struct Config {
     uint64_t   min_transfer_rate = 0;
     duration_t pwm_periode       = 100ms;
     double     off_periode_ratio = 0.1;
-    int        led_pin      = 17;
+    std::vector<int>        led_pins;
 
     // dump the current config
     void print() const noexcept {
@@ -72,16 +73,17 @@ struct Config {
             "off_period_ratio: %.0f %%\n\t"
             "max_transfer_rate: %.3f kbps\n\t"
             "min_transfer_rate: %.3f kbps\n\t"
-            "pin: %d\n\t"
-            "inverted: %d \n\n",
+            "inverted: %d \n\t",
             logging,
             to_sec(pwm_periode),
             off_periode_ratio * 100,
             max_transfer_rate / 1024.0,
             min_transfer_rate / 1024.0,
-            led_pin,
             invert
         );
+        printf("pins: ");
+        std::copy(led_pins.begin(), led_pins.end(), std::ostream_iterator<int>(std::cout, ", "));
+        puts("\n\n");
     }
 
     // convert the transfer rates to the given periode
@@ -154,22 +156,25 @@ private:
 };
 
 class Raspi {
-    int pin = 0;
-    bool inverted = false;
+    std::vector<int> const &pins;
+    bool inverted;
 public:
-    Raspi(int p, bool inv) : pin{ p }, inverted{ inv } {
+    Raspi(std::vector<int> const &p, bool inv) : pins{ p }, inverted{ inv } {
         #ifdef USING_WIRING_PI
             wiringPiSetupGpio();
-            pinMode(pin, OUTPUT);
+            for (auto &p : pins)
+                pinMode(p, OUTPUT);
         #endif
     }
     enum class LedState { On, Off};
     void set_led_state(Raspi::LedState state) const noexcept {
         #ifdef USING_WIRING_PI
             if ((state == LedState::On) != inverted) {
-                digitalWrite(pin, HIGH);
+                for (auto &p : pins)
+                    digitalWrite(p, HIGH);
             } else {
-                digitalWrite(pin, LOW);
+                for (auto &p : pins)
+                    digitalWrite(p, LOW);
             }
         #endif
     }
@@ -254,7 +259,7 @@ auto const one_argument_commands = map<string_view, void(*)(Config &, string_vie
     { "-period"sv, [](auto &cfg, auto value) { cfg.pwm_periode       = parse_value<duration_t>(value, time_extentions);    }},
     { "-max"sv,    [](auto &cfg, auto value) { cfg.max_transfer_rate = parse_value<uint64_t>  (value, size_extentions);    }},
     { "-min"sv,    [](auto &cfg, auto value) { cfg.min_transfer_rate = parse_value<uint64_t>  (value, size_extentions);    }},
-    { "-pin"sv,    [](auto &cfg, auto value) { cfg.led_pin           = parse_value<int>       (value, {});                 }},
+    { "-pin"sv,    [](auto &cfg, auto value) { cfg.led_pins.push_back(parse_value<int>       (value, {}));                 }},
     { "-off"sv,    [](auto &cfg, auto value) { cfg.off_periode_ratio = parse_value<double>    (value, percent_extentions); }},
 };
 
@@ -279,8 +284,10 @@ int main(int argc, char *argv[]) {
     Config cfg = parse_arguments(arguments_t(argv + 1, argv + argc));
     cfg.print();
     cfg.calculate_periode_values();
+    if (cfg.led_pins.empty())
+        cfg.led_pins.push_back(17); // default
 
-    Raspi raspi{ cfg.led_pin, cfg.invert };
+    Raspi raspi{ cfg.led_pins, cfg.invert };
     UsbMon monitor{};
 
     generate_led_pwm(cfg, raspi, monitor);
